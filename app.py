@@ -6,19 +6,19 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, text, Table
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, Table
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from collections import defaultdict
-import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ==========================================
-# 1. PARSER ENGINE (ТВОЙ КОД)
+# 1. PARSER ENGINE 
 # ==========================================
 
 @dataclass
 class ArticleDTO:
+    """Данные полученной статьи."""
     source_name: str
     source_url: str
     title: str
@@ -28,77 +28,207 @@ class ArticleDTO:
     certain_directions: list[str]
 
 class ArxivorgArticleParser:
+    """Класс парсера статей для arxiv.org."""
     BASE_URL = 'https://arxiv.org/'
     SEARCH_URL = 'https://arxiv.org/search/?searchtype=all&source=header&query='
     SOURCE_NAME = 'arxiv.org'
     
-    # (Словарь DIRECTIONS_KEYWORDS сокращен для краткости кода, но логика та же)
     DIRECTIONS_KEYWORDS = {
-        "IT": ["computer", "informatics", "neural", "learning", "data", "code", "algorithm"],
-        "Physics": ["physics", "quantum", "mechanics", "gravity", "spin"],
-        "Biology": ["biology", "gene", "dna", "cell", "evolution"],
-        "Math": ["math", "algebra", "geometry", "equation", "logic"],
-        "Chemistry": ["chemistry", "molecule", "reaction", "atom"]
+        "Информатика и компьютерные науки": [
+            "информатика", "компьютер", "программирование", "алгоритм", "база данных",
+            "вычислительная техника", "кибернетика", "искусственный интеллект",
+            "машинное обучение", "нейронные сети", "компьютерное зрение", "анализ данных",
+            "большие данные", "веб-разработка", "мобильные приложения", "облачные вычисления",
+            "кибербезопасность", "криптография", "блокчейн", "виртуальная реальность",
+            "интернет вещей", "робототехника", "автоматизация", "цифровизация",
+            "программное обеспечение", "аппаратное обеспечение", "сети", "сервер",
+            "фронтенд", "бэкенд", "фуллстек", "devops", "agile", "scrum",
+            "computer science", "informatics", "programming", "algorithm", "database",
+            "software", "hardware", "computing", "artificial intelligence", "ai",
+            "machine learning", "neural networks", "deep learning", "computer vision",
+            "data science", "big data", "web development", "mobile apps", "cloud computing",
+            "cybersecurity", "cryptography", "blockchain", "virtual reality", "vr",
+            "internet of things", "iot", "robotics", "automation", "digitalization",
+            "frontend", "backend", "fullstack", "devops", "agile", "scrum"
+        ],
+        "Математика": [
+            "математика", "алгебра", "геометрия", "анализ", "исчисление",
+            "дифференциальные уравнения", "теория вероятностей", "статистика",
+            "численные методы", "оптимизация", "топология", "теория чисел",
+            "комбинаторика", "теория графов", "математическая логика", "теория множеств",
+            "математическое моделирование", "вычислительная математика", "линейная алгебра",
+            "дискретная математика", "функциональный анализ", "теория вероятностей",
+            "математическая статистика", "теория игр", "финансовая математика",
+            "mathematics", "algebra", "geometry", "calculus", "analysis",
+            "differential equations", "probability theory", "statistics",
+            "numerical methods", "optimization", "topology", "number theory",
+            "combinatorics", "graph theory", "mathematical logic", "set theory",
+            "mathematical modeling", "computational mathematics", "linear algebra",
+            "discrete mathematics", "functional analysis", "probability",
+            "mathematical statistics", "game theory", "financial mathematics"
+        ],
+        "Физика": [
+            "физика", "механика", "термодинамика", "оптика", "электричество",
+            "магнетизм", "квантовая физика", "ядерная физика", "астрофизика",
+            "теория относительности", "электродинамика", "статистическая физика",
+            "физика твердого тела", "физика плазмы", "акустика", "гидродинамика",
+            "молекулярная физика", "атомная физика", "физика элементарных частиц",
+            "космология", "гравитация", "физика конденсированного состояния",
+            "нанофизика", "биофизика", "геофизика",
+            "physics", "mechanics", "thermodynamics", "optics", "electricity",
+            "magnetism", "quantum physics", "nuclear physics", "astrophysics",
+            "relativity", "electrodynamics", "statistical physics",
+            "solid state physics", "plasma physics", "acoustics", "hydrodynamics",
+            "molecular physics", "atomic physics", "particle physics",
+            "cosmology", "gravity", "condensed matter physics",
+            "nanophysics", "biophysics", "geophysics"
+        ],
+        "Химия": [
+            "химия", "органическая химия", "неорганическая химия", "аналитическая химия",
+            "физическая химия", "биохимия", "химические реакции", "периодическая система",
+            "молекулы", "атомы", "соединения", "катализ", "полимеры", "нанохимия",
+            "электрохимия", "фотохимия", "радиохимия", "квантовая химия", "стереохимия",
+            "химическая кинетика", "химическое равновесие", "химическая термодинамика",
+            "материаловедение", "кристаллография", "спектроскопия",
+            "chemistry", "organic chemistry", "inorganic chemistry", "analytical chemistry",
+            "physical chemistry", "biochemistry", "chemical reactions", "periodic table",
+            "molecules", "atoms", "compounds", "catalysis", "polymers", "nanochemistry",
+            "electrochemistry", "photochemistry", "radiochemistry", "quantum chemistry",
+            "stereochemistry", "chemical kinetics", "chemical equilibrium", "chemical thermodynamics",
+            "materials science", "crystallography", "spectroscopy"
+        ],
+        "Биология": [
+            "биология", "генетика", "эволюция", "ботаника", "зоология",
+            "микробиология", "молекулярная биология", "клеточная биология",
+            "экология", "физиология", "анатомия", "биотехнология", "биоинформатика",
+            "генная инженерия", "иммунология", "вирусология", "биохимия",
+            "нейробиология", "биофизика", "палеонтология", "эмбриология",
+            "цитология", "гистология", "систематика", "биогеография",
+            "biology", "genetics", "evolution", "botany", "zoology",
+            "microbiology", "molecular biology", "cell biology",
+            "ecology", "physiology", "anatomy", "biotechnology", "bioinformatics",
+            "genetic engineering", "immunology", "virology", "biochemistry",
+            "neuroscience", "biophysics", "paleontology", "embryology",
+            "cytology", "histology", "taxonomy", "biogeography"
+        ],
+        "Русский язык и литература": [
+            "русский язык", "литература", "грамматика", "синтаксис", "морфология",
+            "поэзия", "проза", "фольклор", "лингвистика", "филология",
+            "пушкин", "толстой", "достоевский", "чехов", "русская классика",
+            "словообразование", "орфография", "пунктуация", "стилистика",
+            "риторика", "литературоведение", "поэтика", "текстология",
+            "диалектология", "палеография", "семантика", "прагматика",
+            "russian language", "literature", "grammar", "syntax", "morphology",
+            "poetry", "prose", "folklore", "linguistics", "philology",
+            "pushkin", "tolstoy", "dostoevsky", "chekhov", "russian classics",
+            "word formation", "spelling", "punctuation", "stylistics",
+            "rhetoric", "literary criticism", "poetics", "textual criticism",
+            "dialectology", "paleography", "semantics", "pragmatics"
+        ],
+        "История": [
+            "история", "археология", "древний мир", "средневековье", "новое время",
+            "исторические события", "цивилизация", "культура", "историография",
+            "всемирная история", "отечественная история", "история россии",
+            "античность", "ренессанс", "просвещение", "революция", "война",
+            "исторические источники", "архивы", "музееведение", "палеография",
+            "нумизматика", "геральдика", "историческая география",
+            "history", "archaeology", "ancient world", "middle ages", "modern era",
+            "historical events", "civilization", "culture", "historiography",
+            "world history", "national history", "russian history",
+            "antiquity", "renaissance", "enlightenment", "revolution", "war",
+            "historical sources", "archives", "museology", "paleography",
+            "numismatics", "heraldry", "historical geography"
+        ],
+        "Экономика": [
+            "экономика", "макроэкономика", "микроэкономика", "финансы", "банки",
+            "рынок", "инвестиции", "бизнес", "менеджмент", "маркетинг",
+            "бухгалтерия", "аудит", "налоги", "бюджет", "инфляция",
+            "безработица", "валютный курс", "фондовый рынок", "криптовалюты",
+            "предпринимательство", "логистика", "снабжение", "продажи",
+            "экономический рост", "международная торговля", "государственные финансы",
+            "economics", "macroeconomics", "microeconomics", "finance", "banks",
+            "market", "investment", "business", "management", "marketing",
+            "accounting", "audit", "taxes", "budget", "inflation",
+            "unemployment", "exchange rate", "stock market", "cryptocurrency",
+            "entrepreneurship", "logistics", "supply chain", "sales",
+            "economic growth", "international trade", "public finance"
+        ],
+        # ... (Можно добавить остальные категории, но для MVP этого достаточно)
     }
 
     def parse(self, target_name: str) -> list[ArticleDTO]:
-        print(f"[PARSER] Ищу статьи для: {target_name}...")
-        return self.parse_news_page(target_name)
+        """Запуск парсера."""
+        print(f"[PARSER] Starting parser for: {target_name}")
+        articles = self.parse_news_page(target_name)
+        return articles
 
     def parse_news_page(self, target_name: str) -> list[ArticleDTO]:
-        result = []
+        """Основной парсер статей."""
+        result: list[ArticleDTO] = []
         try:
             search_query = target_name.replace(' ', '+')
             url = f"{self.SEARCH_URL}{search_query}"
+            print(f"[PARSER] URL: {url}")
+
             html_content = self.get_data(url)
             if not html_content: return result
 
             soup = BeautifulSoup(html_content, 'html.parser')
             search_results = soup.find_all('li', class_='arxiv-result')
 
-            for item in search_results[:5]: # Берем топ-5 для скорости
-                dto = self.parse_article_item(item)
-                if dto: result.append(dto)
+            # Ограничим первыми 10 результатами для скорости
+            for i, item in enumerate(search_results[:10]):
+                try:
+                    article_dto = self.parse_article_item(item)
+                    if article_dto:
+                        result.append(article_dto)
+                except Exception as e:
+                    print(f"[PARSER] Error parsing result {i + 1}: {e}")
+                    continue
         except Exception as e:
-            print(f"[PARSER ERROR] {e}")
+            print(f"[PARSER] Error in parse_news_page: {e}")
+
+        print(f"[PARSER] Total parsed: {len(result)}")
         return result
 
     def parse_article_item(self, item) -> ArticleDTO | None:
         try:
             title_elem = item.find('p', class_='title')
             title = title_elem.get_text().strip() if title_elem else "No title"
-            
+
             link_elems = item.find('p', class_='list-title is-inline-block').find_all('a')
             article_url = ''
             for el in link_elems:
-                if el.get_text() == 'pdf': # Берем ссылку на PDF если есть
+                if el.get_text() == 'pdf': # Приоритет на PDF
                     article_url = el['href']
                     break
-            if not article_url: article_url = link_elems[0]['href']
+            if not article_url and link_elems: article_url = link_elems[0]['href']
 
             authors = self.parse_authors(item)
             direction = self.parse_direction(item)
+            source_url = self.BASE_URL
 
-            # Определяем категорию
-            found_directions = []
-            text_for_search = (title + " " + direction).lower()
-            for key, keywords in self.DIRECTIONS_KEYWORDS.items():
-                if any(k in text_for_search for k in keywords):
-                    found_directions.append(key)
-            
-            # Если категорию не нашли, ставим General
-            if not found_directions: found_directions = ["General Science"]
+            directions = []
+            # Проверка по ключевым словам
+            text_to_check = (title + " " + direction).lower()
+            for category, keywords in self.DIRECTIONS_KEYWORDS.items():
+                for k in keywords:
+                    if k in text_to_check:
+                        if category not in directions:
+                            directions.append(category)
+                        break # Достаточно одного совпадения для категории
 
             return ArticleDTO(
                 source_name=self.SOURCE_NAME,
-                source_url=self.BASE_URL,
+                source_url=source_url,
                 title=title,
                 authors=authors,
                 article_url=article_url,
                 article_direction=direction,
-                certain_directions=found_directions
+                certain_directions=directions
             )
-        except:
+        except Exception as e:
+            print(f"[PARSER] Item error: {e}")
             return None
 
     def parse_authors(self, item) -> list[str]:
@@ -110,27 +240,31 @@ class ArxivorgArticleParser:
         return authors
 
     def parse_direction(self, item) -> str:
+        direction = ""
         try:
-            span = item.find('span', class_='abstract-full')
-            return span.get_text().strip()[:100] if span else ""
-        except: return ""
+            span_elem = item.find('span', class_='abstract-full')
+            if span_elem: direction = span_elem.get_text().strip()
+        except: pass
+        return direction
 
     def get_data(self, url: str) -> str | None:
         try:
             headers = {'User-Agent': UserAgent().random}
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=15)
             return resp.text if resp.status_code == 200 else None
-        except: return None
+        except Exception as e:
+            print(f"[PARSER] HTTP Error: {e}")
+            return None
 
 # ==========================================
-# 2. НАСТРОЙКА FLASK И БД
+# 2. FLASK & DATABASE SETUP
 # ==========================================
 
 app = Flask(__name__)
 CORS(app)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(BASE_DIR, 'science_articles.db')
+db_path = os.path.join(BASE_DIR, 'database/science_articles.db')
 engine = create_engine(f'sqlite:///{db_path}', echo=False)
 Base = declarative_base()
 Session = sessionmaker(bind=engine)
@@ -165,7 +299,7 @@ class Article(Base):
     __tablename__ = 'articles'
     id = Column(Integer, primary_key=True)
     title = Column(String)
-    url = Column(String) # Ссылка на оригинал
+    url = Column(String)
     area = Column(String) 
     citations = Column(Integer, default=0)
     authors_text = Column(String) # Сохраняем список авторов строкой
@@ -188,7 +322,7 @@ class ScienceRecommender:
         self.authors_metadata = {}
 
     def load_and_train(self):
-        print("[ML] Переобучение модели на новых данных...")
+        print("[ML] Retraining model...")
         session = Session()
         users = session.query(User).all()
         corpus = []
@@ -197,9 +331,8 @@ class ScienceRecommender:
         self.idx_to_name = {}
         
         for user in users:
-            # Собираем текст из заголовков его статей
-            text_content = " ".join([a.title for a in user.articles])
-            if not text_content: text_content = user.area or "General" # Если статей нет, берем сферу
+            # Текст для ML: заголовки статей + область
+            text_content = " ".join([a.title for a in user.articles]) + " " + (user.area or "")
             
             corpus.append(text_content)
             full_name = f"{user.last_name} {user.first_name}"
@@ -210,8 +343,11 @@ class ScienceRecommender:
             
         session.close()
         if corpus:
-            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
-            self.cosine_sim_matrix = cosine_similarity(self.tfidf_matrix, self.tfidf_matrix)
+            try:
+                self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
+                self.cosine_sim_matrix = cosine_similarity(self.tfidf_matrix, self.tfidf_matrix)
+            except ValueError:
+                print("[ML] Not enough data to train yet.")
 
     def get_recommendations(self, last_name, first_name):
         full_name = f"{last_name} {first_name}"
@@ -225,22 +361,112 @@ class ScienceRecommender:
         for cand_idx, score in scores:
             cand_name = self.idx_to_name[cand_idx]
             if cand_name == full_name: continue
-            if score < 0.05: continue
+            if score < 0.05: continue # Отсекаем мусор
             
             recs.append({
                 'name': cand_name,
                 'score': int(score * 100),
                 'area': self.authors_metadata[cand_name]['area'],
-                'reason': 'Схожие публикации'
+                'reason': 'Схожие научные интересы'
             })
         return recs[:3]
 
+# Инициализация
 recommender = ScienceRecommender(engine)
 arxiv_parser = ArxivorgArticleParser()
 
 # ==========================================
-# 4. API Routes
+# 4. API ROUTES
 # ==========================================
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    session = Session()
+    
+    if session.query(User).filter_by(email=data['email']).first():
+        return jsonify({'error': 'Email already exists'}), 400
+
+    last_name = data.get('lastName', '')
+    
+    # 1. ЗАПУСК ПАРСЕРА
+    parsed_articles = arxiv_parser.parse(last_name)
+    
+    # 2. Определение сферы (берем самую частую из найденных или "General")
+    user_area = "General Science"
+    if parsed_articles:
+        # Собираем все определенные направления
+        all_dirs = []
+        for dto in parsed_articles:
+            all_dirs.extend(dto.certain_directions)
+        
+        if all_dirs:
+            # Находим самое частое
+            from collections import Counter
+            user_area = Counter(all_dirs).most_common(1)[0][0]
+    
+    # Если парсер ничего не нашел, оставляем то, что выбрал пользователь в форме (если было)
+    if user_area == "General Science" and data.get('area'):
+        user_area = data.get('area')
+
+    new_user = User(
+        email=data['email'], password=data['password'], first_name=data['firstName'],
+        last_name=last_name, role=data['role'], academic_status=data['academicStatus'],
+        city=data['city'], age=data.get('age'), area=user_area
+    )
+    
+    # 3. Сохранение статей
+    for dto in parsed_articles:
+        # Проверяем дубликаты по URL
+        existing_art = session.query(Article).filter_by(url=dto.article_url).first()
+        
+        if existing_art:
+            new_user.articles.append(existing_art)
+        else:
+            # Берем первое определенное направление для статьи или General
+            art_area = dto.certain_directions[0] if dto.certain_directions else "Scientific Article"
+            
+            new_art = Article(
+                title=dto.title,
+                url=dto.article_url,
+                area=art_area,
+                authors_text=", ".join(dto.authors),
+                citations=0
+            )
+            session.add(new_art)
+            new_user.articles.append(new_art)
+            
+    session.add(new_user)
+    session.commit()
+    
+    # 4. Переобучение ML
+    recommender.load_and_train()
+
+    res_user = {
+        'id': new_user.id, 'email': new_user.email, 'firstName': new_user.first_name,
+        'lastName': new_user.last_name, 'role': new_user.role, 'area': new_user.area,
+        'articles': [a.id for a in new_user.articles], 'likedArticles': []
+    }
+    session.close()
+    return jsonify(res_user)
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    session = Session()
+    user = session.query(User).filter_by(email=data['email'], password=data['password']).first()
+    if user:
+        recs = recommender.get_recommendations(user.last_name, user.first_name)
+        res = {
+            'id': user.id, 'email': user.email, 'firstName': user.first_name, 'lastName': user.last_name,
+            'role': user.role, 'area': user.area, 
+            'articles': [a.id for a in user.articles],
+            'likedArticles': [a.id for a in user.liked_articles],
+            'recommendations': recs
+        }
+        session.close()
+        return jsonify(res)
+    return jsonify({'error': 'Invalid credentials'}), 401
 
 @app.route('/api/articles', methods=['GET'])
 def get_articles():
@@ -272,85 +498,6 @@ def get_users():
     session.close()
     return jsonify(res)
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.json
-    session = Session()
-    user = session.query(User).filter_by(email=data['email'], password=data['password']).first()
-    if user:
-        recs = recommender.get_recommendations(user.last_name, user.first_name)
-        res = {
-            'id': user.id, 'email': user.email, 'firstName': user.first_name, 'lastName': user.last_name,
-            'role': user.role, 'area': user.area, 
-            'articles': [a.id for a in user.articles],
-            'likedArticles': [a.id for a in user.liked_articles],
-            'recommendations': recs
-        }
-        session.close()
-        return jsonify(res)
-    return jsonify({'error': 'Auth failed'}), 401
-
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.json
-    session = Session()
-    
-    if session.query(User).filter_by(email=data['email']).first():
-        return jsonify({'error': 'Email busy'}), 400
-
-    last_name = data.get('lastName', '')
-    
-    # === МАГИЯ: ЗАПУСКАЕМ ПАРСЕР ===
-    parsed_articles = arxiv_parser.parse(last_name)
-    
-    # Определяем основную сферу ученого по его статьям
-    user_area = data.get('area', 'General')
-    if parsed_articles:
-        user_area = parsed_articles[0].certain_directions[0]
-
-    new_user = User(
-        email=data['email'], password=data['password'], first_name=data['firstName'],
-        last_name=last_name, role=data['role'], academic_status=data['academicStatus'],
-        city=data['city'], age=data.get('age'), area=user_area
-    )
-    
-    # Сохраняем найденные статьи в БД
-    count_new = 0
-    for dto in parsed_articles:
-        # Проверяем, есть ли такая статья уже
-        existing = session.query(Article).filter_by(url=dto.article_url).first()
-        
-        if existing:
-            new_user.articles.append(existing)
-        else:
-            new_art = Article(
-                title=dto.title,
-                url=dto.article_url,
-                area=dto.certain_directions[0],
-                authors_text=", ".join(dto.authors),
-                citations=0 # Arxiv не дает цитирования, ставим 0
-            )
-            session.add(new_art)
-            new_user.articles.append(new_art)
-            count_new += 1
-            
-    session.add(new_user)
-    session.commit()
-    
-    # Сразу дообучаем ML
-    recommender.load_and_train()
-    
-    print(f"[REGISTER] User created. Parsed {len(parsed_articles)} articles. New in DB: {count_new}")
-
-    res_user = {
-        'id': new_user.id, 'email': new_user.email, 'firstName': new_user.first_name,
-        'lastName': new_user.last_name, 'role': new_user.role, 'area': new_user.area,
-        'articles': [a.id for a in new_user.articles], 'likedArticles': [],
-        'recommendations': []
-    }
-    session.close()
-    return jsonify(res_user)
-
 @app.route('/api/like', methods=['POST'])
 def like():
     data = request.json
@@ -364,7 +511,7 @@ def like():
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
-    # Seed (первоначальное заполнение) для теста
+    # Создаем админа при первом запуске
     s = Session()
     if not s.query(User).filter_by(email='admin@sirius.ru').first():
         s.add(User(email='admin@sirius.ru', password='admin', first_name='System', last_name='Admin', role='admin', area='Admin'))
